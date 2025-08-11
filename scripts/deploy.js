@@ -1,155 +1,288 @@
-const { ethers } = require("hardhat");
-const fs = require('fs');
-const path = require('path');
+// monitoring/contract-monitor.js
+const axios = require('axios');
+const { ethers } = require('ethers');
+require('dotenv').config();
 
-async function main() {
-  console.log("🚀 Starting Simple Bank v2.1 deployment...");
-  console.log("=====================================");
-  
-  // Get deployer account
-  const [deployer] = await ethers.getSigners();
-  const network = await ethers.provider.getNetwork();
-  
-  console.log(`📡 Network: ${network.name} (Chain ID: ${network.chainId})`);
-  console.log(`👤 Deploying with account: ${deployer.address}`);
-  
-  // Check deployer balance
-  const balance = await ethers.provider.getBalance(deployer.address);
-  console.log(`💰 Account balance: ${ethers.formatEther(balance)} ETH`);
-  
-  if (balance < ethers.parseEther("0.01")) {
-    throw new Error("❌ Insufficient balance for deployment. Need at least 0.01 ETH");
+class SimpleBankMonitor {
+  constructor() {
+    this.contractAddress = "0xADBaAdf56d185397D76Bb9eB32496775B60A4124";
+    this.etherscanApiKey = process.env.ETHERSCAN_API_KEY;
+    this.infuraKey = process.env.INFURA_API_KEY;
+    
+    // Initialize provider
+    this.provider = new ethers.JsonRpcProvider(`https://sepolia.infura.io/v3/${this.infuraKey}`);
+    
+    // Contract ABI (minimal for monitoring)
+    this.contractAbi = [
+      "function getBankStats() external view returns (address owner, uint96 totalDeposits, uint32 totalUsers, bool emergencyMode, uint256 contractBalance)",
+      "function getMyBalance() public view returns (uint256)",
+      "event Deposit(address indexed user, uint256 amount, uint256 newBalance, uint256 indexed timestamp, uint256 indexed transactionId)",
+      "event Withdrawal(address indexed user, uint256 amount, uint256 newBalance, uint256 indexed timestamp, uint256 indexed transactionId)",
+      "event Transfer(address indexed from, address indexed to, uint256 amount, uint256 indexed timestamp, uint256 transactionId)",
+      "event LargeTransactionAlert(address indexed user, uint256 amount, string operation)"
+    ];
+    
+    this.contract = new ethers.Contract(this.contractAddress, this.contractAbi, this.provider);
+    
+    console.log("🎧 Simple Bank Monitor initialized");
+    console.log(`📍 Monitoring contract: ${this.contractAddress}`);
+    console.log(`📡 Network: Sepolia`);
   }
-  
-  // Get fee data (ethers v6 compatible)
-  const feeData = await ethers.provider.getFeeData();
-  const gasPrice = feeData.gasPrice;
-  console.log(`⛽ Gas price: ${ethers.formatUnits(gasPrice, "gwei")} gwei`);
-  
-  console.log("\n🏗️ Deploying contract...");
-  
-  // Deploy the contract
-  const SimpleBankV21 = await ethers.getContractFactory("SimpleBankV2_1");
-  
-  // Deploy with optimization settings
-  const simpleBankV21 = await SimpleBankV21.deploy();
-  
-  console.log(`⏳ Transaction hash: ${simpleBankV21.deploymentTransaction().hash}`);
-  console.log("⏳ Waiting for deployment confirmation...");
-  
-  // Wait for deployment
-  await simpleBankV21.waitForDeployment();
-  const contractAddress = await simpleBankV21.getAddress();
-  
-  console.log(`✅ Contract deployed to: ${contractAddress}`);
-  
-  // Initialize the contract
-  console.log("\n🎯 Initializing contract...");
-  const initTx = await simpleBankV21.initialize();
-  const initReceipt = await initTx.wait();
-  
-  console.log(`✅ Contract initialized (Gas used: ${initReceipt.gasUsed.toLocaleString()})`);
-  
-  // Get final deployment details
-  const deploymentBlock = await ethers.provider.getBlockNumber();
-  const deploymentTimestamp = (await ethers.provider.getBlock(deploymentBlock)).timestamp;
-  
-  // Create deployment info object
-  const deploymentInfo = {
-    network: network.name,
-    chainId: Number(network.chainId),
-    contractName: "SimpleBankV2_1",
-    contractAddress: contractAddress,
-    deployer: deployer.address,
-    deploymentHash: simpleBankV21.deploymentTransaction().hash,
-    initializationHash: initTx.hash,
-    blockNumber: deploymentBlock,
-    timestamp: deploymentTimestamp,
-    gasUsed: {
-      deployment: (await simpleBankV21.deploymentTransaction().wait()).gasUsed.toString(),
-      initialization: initReceipt.gasUsed.toString()
-    },
-    gasPrice: gasPrice ? gasPrice.toString() : "0",
-    totalCost: "estimated", // Will calculate after deployment
-    deployedAt: new Date().toISOString(),
-    compiler: {
-      version: "0.8.19",
-      optimizer: {
-        enabled: true,
-        runs: 1
+
+  // Monitor basic contract health
+  async checkContractHealth() {
+    try {
+      console.log("\n🏥 Checking contract health...");
+      
+      const bankStats = await this.contract.getBankStats();
+      const blockNumber = await this.provider.getBlockNumber();
+      const balance = await this.provider.getBalance(this.contractAddress);
+      
+      const healthReport = {
+        timestamp: new Date().toISOString(),
+        blockNumber: blockNumber,
+        contractBalance: ethers.formatEther(balance),
+        totalDeposits: ethers.formatEther(bankStats.totalDeposits),
+        totalUsers: Number(bankStats.totalUsers),
+        emergencyMode: bankStats.emergencyMode,
+        owner: bankStats.owner,
+        status: bankStats.emergencyMode ? "⚠️ EMERGENCY" : "✅ HEALTHY"
+      };
+      
+      console.log("📊 Contract Health Report:");
+      console.log(`   Status: ${healthReport.status}`);
+      console.log(`   Block: ${healthReport.blockNumber}`);
+      console.log(`   Contract Balance: ${healthReport.contractBalance} ETH`);
+      console.log(`   Total Deposits: ${healthReport.totalDeposits} ETH`);
+      console.log(`   Active Users: ${healthReport.totalUsers}`);
+      console.log(`   Emergency Mode: ${healthReport.emergencyMode}`);
+      
+      // Alert conditions
+      if (bankStats.emergencyMode) {
+        await this.sendAlert("🚨 EMERGENCY MODE ACTIVATED", healthReport);
       }
-    },
-    dependencies: {
-      openzeppelin: "@openzeppelin/contracts-upgradeable",
-      chainlink: "@chainlink/contracts"
+      
+      if (Number(bankStats.totalUsers) > 100) {
+        await this.sendAlert("📈 USER MILESTONE: 100+ users reached", healthReport);
+      }
+      
+      return healthReport;
+      
+    } catch (error) {
+      console.error("❌ Health check failed:", error.message);
+      await this.sendAlert("🔴 CONTRACT HEALTH CHECK FAILED", { error: error.message });
+      return null;
     }
-  };
-  
-  // Save deployment info
-  const deploymentsDir = path.join(__dirname, '..', 'deployments');
-  if (!fs.existsSync(deploymentsDir)) {
-    fs.mkdirSync(deploymentsDir, { recursive: true });
   }
-  
-  const deploymentFile = path.join(deploymentsDir, `${network.name}-deployment.json`);
-  fs.writeFileSync(deploymentFile, JSON.stringify(deploymentInfo, null, 2));
-  
-  console.log(`📄 Deployment info saved to: ${deploymentFile}`);
-  
-  // Run basic verification tests
-  console.log("\n🧪 Running deployment verification...");
-  
-  try {
-    // Test basic contract functions
-    const bankStats = await simpleBankV21.getBankStats();
-    console.log(`✅ Bank owner: ${bankStats.owner}`);
-    console.log(`✅ Total deposits: ${bankStats.totalDeposits}`);
-    console.log(`✅ Emergency mode: ${bankStats.emergencyMode}`);
-    
-    // Test role assignments
-    const ADMIN_ROLE = await simpleBankV21.ADMIN_ROLE();
-    const hasAdminRole = await simpleBankV21.hasRole(ADMIN_ROLE, deployer.address);
-    console.log(`✅ Admin role assigned: ${hasAdminRole}`);
-    
-    console.log("✅ Basic verification tests passed!");
-    
-  } catch (error) {
-    console.log("⚠️ Verification tests failed:", error.message);
+
+  // Monitor recent transactions using Etherscan API
+  async checkRecentTransactions() {
+    try {
+      console.log("\n📊 Checking recent transactions...");
+      
+      const response = await axios.get('https://api-sepolia.etherscan.io/api', {
+        params: {
+          module: 'account',
+          action: 'txlist',
+          address: this.contractAddress,
+          startblock: 0,
+          endblock: 99999999,
+          page: 1,
+          offset: 10,
+          sort: 'desc',
+          apikey: this.etherscanApiKey
+        }
+      });
+
+      if (response.data.status === '1') {
+        const transactions = response.data.result;
+        
+        console.log(`📋 Found ${transactions.length} recent transactions`);
+        
+        // Analyze transactions
+        let totalVolume = 0n;
+        let largeTransactions = 0;
+        const oneEth = ethers.parseEther("1.0");
+        
+        transactions.forEach((tx, index) => {
+          const value = BigInt(tx.value);
+          totalVolume += value;
+          
+          if (value >= oneEth) {
+            largeTransactions++;
+            console.log(`   🚨 Large transaction #${index + 1}: ${ethers.formatEther(value)} ETH`);
+          }
+        });
+        
+        console.log(`📊 Transaction Analysis:`);
+        console.log(`   Total Volume: ${ethers.formatEther(totalVolume)} ETH`);
+        console.log(`   Large Transactions (>1 ETH): ${largeTransactions}`);
+        
+        // Alert for unusual activity
+        if (largeTransactions > 3) {
+          await this.sendAlert("⚠️ HIGH VOLUME ACTIVITY", {
+            largeTransactions,
+            totalVolume: ethers.formatEther(totalVolume)
+          });
+        }
+        
+        return {
+          totalTransactions: transactions.length,
+          totalVolume: ethers.formatEther(totalVolume),
+          largeTransactions
+        };
+        
+      } else {
+        console.log("⚠️ No transactions found or API error");
+        return null;
+      }
+      
+    } catch (error) {
+      console.error("❌ Transaction monitoring failed:", error.message);
+      return null;
+    }
   }
-  
-  // Final summary
-  console.log("\n🎉 DEPLOYMENT COMPLETE!");
-  console.log("=====================================");
-  console.log(`📍 Network: ${network.name}`);
-  console.log(`🏦 Contract: ${contractAddress}`);
-  console.log(`💰 Total Cost: ${ethers.formatEther(deploymentInfo.totalCost)} ETH`);
-  console.log(`🔗 Etherscan: https://${network.name === 'sepolia' ? 'sepolia.' : ''}etherscan.io/address/${contractAddress}`);
-  console.log("=====================================");
-  
-  // Instructions for verification
-  if (network.name !== "hardhat" && network.name !== "localhost") {
-    console.log("\n📋 Next steps:");
-    console.log("1. Verify contract on Etherscan:");
-    console.log(`   npx hardhat verify --network ${network.name} ${contractAddress}`);
-    console.log("2. Set up monitoring for the deployed contract");
-    console.log("3. Update frontend with new contract address");
-    console.log("4. Announce deployment to stakeholders");
+
+  // Listen for real-time events
+  startEventListener() {
+    console.log("\n🎧 Starting real-time event monitoring...");
+    
+    // Listen for deposits
+    this.contract.on("Deposit", (user, amount, newBalance, timestamp, transactionId) => {
+      const formattedAmount = ethers.formatEther(amount);
+      console.log(`💰 DEPOSIT: ${user} deposited ${formattedAmount} ETH`);
+      
+      if (amount >= ethers.parseEther("1.0")) {
+        this.sendAlert("💰 LARGE DEPOSIT DETECTED", {
+          user,
+          amount: formattedAmount,
+          transactionId: Number(transactionId)
+        });
+      }
+    });
+    
+    // Listen for withdrawals
+    this.contract.on("Withdrawal", (user, amount, newBalance, timestamp, transactionId) => {
+      const formattedAmount = ethers.formatEther(amount);
+      console.log(`🏧 WITHDRAWAL: ${user} withdrew ${formattedAmount} ETH`);
+      
+      if (amount >= ethers.parseEther("1.0")) {
+        this.sendAlert("🏧 LARGE WITHDRAWAL DETECTED", {
+          user,
+          amount: formattedAmount,
+          transactionId: Number(transactionId)
+        });
+      }
+    });
+    
+    // Listen for transfers
+    this.contract.on("Transfer", (from, to, amount, timestamp, transactionId) => {
+      const formattedAmount = ethers.formatEther(amount);
+      console.log(`🔄 TRANSFER: ${from} → ${to} (${formattedAmount} ETH)`);
+    });
+    
+    // Listen for large transaction alerts
+    this.contract.on("LargeTransactionAlert", (user, amount, operation) => {
+      const formattedAmount = ethers.formatEther(amount);
+      console.log(`🚨 LARGE TRANSACTION ALERT: ${operation} of ${formattedAmount} ETH by ${user}`);
+      
+      this.sendAlert("🚨 AUTOMATIC LARGE TRANSACTION ALERT", {
+        user,
+        amount: formattedAmount,
+        operation
+      });
+    });
+    
+    console.log("✅ Event listeners active");
   }
-  
-  return {
-    contractAddress,
-    deploymentInfo
-  };
+
+  // Send alerts (webhook/email simulation)
+  async sendAlert(title, data) {
+    const alert = {
+      timestamp: new Date().toISOString(),
+      contract: this.contractAddress,
+      network: "sepolia",
+      title: title,
+      data: data
+    };
+    
+    console.log(`\n🚨 ALERT: ${title}`);
+    console.log(`📋 Details:`, JSON.stringify(data, null, 2));
+    
+    // In a real implementation, you would send to:
+    // - Slack webhook
+    // - Discord webhook  
+    // - Email service (SendGrid, etc.)
+    // - PagerDuty
+    // - Custom monitoring dashboard
+    
+    // For now, just log to console
+    console.log("📤 Alert logged (would notify external systems)");
+    
+    return alert;
+  }
+
+  // Run comprehensive monitoring cycle
+  async runMonitoringCycle() {
+    console.log("\n🔄 Running monitoring cycle...");
+    console.log("=====================================");
+    
+    const healthReport = await this.checkContractHealth();
+    const transactionReport = await this.checkRecentTransactions();
+    
+    const monitoringReport = {
+      timestamp: new Date().toISOString(),
+      health: healthReport,
+      transactions: transactionReport,
+      status: healthReport ? "✅ OPERATIONAL" : "❌ ISSUES DETECTED"
+    };
+    
+    console.log(`\n📋 Monitoring Summary: ${monitoringReport.status}`);
+    
+    return monitoringReport;
+  }
+
+  // Continuous monitoring (runs every 5 minutes)
+  startContinuousMonitoring() {
+    console.log("🎯 Starting continuous monitoring (5-minute intervals)...");
+    
+    // Initial check
+    this.runMonitoringCycle();
+    
+    // Start event listening
+    this.startEventListener();
+    
+    // Schedule periodic checks
+    setInterval(async () => {
+      await this.runMonitoringCycle();
+    }, 5 * 60 * 1000); // 5 minutes
+    
+    console.log("✅ Continuous monitoring active");
+  }
 }
 
-// Execute deployment
-main()
-  .then((result) => {
-    console.log(`\n✅ Deployment script completed successfully!`);
-    process.exit(0);
-  })
-  .catch((error) => {
-    console.error("\n❌ Deployment failed:");
-    console.error(error);
-    process.exit(1);
-  });
+// Usage example
+async function main() {
+  const monitor = new SimpleBankMonitor();
+  
+  // Run one-time monitoring report
+  console.log("🚀 Simple Bank v2.1 Monitoring System");
+  console.log("=====================================");
+  
+  await monitor.runMonitoringCycle();
+  
+  // For continuous monitoring, uncomment:
+  // monitor.startContinuousMonitoring();
+  
+  console.log("\n✅ Monitoring complete!");
+  console.log("🔗 Check your contract: https://sepolia.etherscan.io/address/0xADBaAdf56d185397D76Bb9eB32496775B60A4124");
+}
+
+// Run monitoring
+if (require.main === module) {
+  main()
+    .then(() => console.log("Monitoring script completed"))
+    .catch(console.error);
+}
+
+module.exports = SimpleBankMonitor;

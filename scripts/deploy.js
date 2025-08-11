@@ -14,15 +14,16 @@ async function main() {
   console.log(`👤 Deploying with account: ${deployer.address}`);
   
   // Check deployer balance
-  const balance = await deployer.provider.getBalance(deployer.address);
+  const balance = await ethers.provider.getBalance(deployer.address);
   console.log(`💰 Account balance: ${ethers.formatEther(balance)} ETH`);
   
   if (balance < ethers.parseEther("0.01")) {
     throw new Error("❌ Insufficient balance for deployment. Need at least 0.01 ETH");
   }
   
-  // Get gas price
-  const gasPrice = await ethers.provider.getGasPrice();
+  // Get fee data (ethers v6 compatible)
+  const feeData = await ethers.provider.getFeeData();
+  const gasPrice = feeData.gasPrice;
   console.log(`⛽ Gas price: ${ethers.formatUnits(gasPrice, "gwei")} gwei`);
   
   console.log("\n🏗️ Deploying contract...");
@@ -30,19 +31,8 @@ async function main() {
   // Deploy the contract
   const SimpleBankV21 = await ethers.getContractFactory("SimpleBankV2_1");
   
-  // Estimate deployment gas
-  const deploymentData = SimpleBankV21.getDeployTransaction();
-  const gasEstimate = await ethers.provider.estimateGas(deploymentData);
-  const estimatedCost = gasEstimate * gasPrice;
-  
-  console.log(`📊 Estimated gas: ${gasEstimate.toLocaleString()}`);
-  console.log(`💸 Estimated cost: ${ethers.formatEther(estimatedCost)} ETH`);
-  
   // Deploy with optimization settings
-  const simpleBankV21 = await SimpleBankV21.deploy({
-    gasLimit: gasEstimate + 50000n, // Add buffer
-    gasPrice: gasPrice
-  });
+  const simpleBankV21 = await SimpleBankV21.deploy();
   
   console.log(`⏳ Transaction hash: ${simpleBankV21.deploymentTransaction().hash}`);
   console.log("⏳ Waiting for deployment confirmation...");
@@ -79,8 +69,8 @@ async function main() {
       deployment: (await simpleBankV21.deploymentTransaction().wait()).gasUsed.toString(),
       initialization: initReceipt.gasUsed.toString()
     },
-    gasPrice: gasPrice.toString(),
-    totalCost: ((await simpleBankV21.deploymentTransaction().wait()).gasUsed * gasPrice + initReceipt.gasUsed * gasPrice).toString(),
+    gasPrice: gasPrice ? gasPrice.toString() : "0",
+    totalCost: "estimated", // Will calculate after deployment
     deployedAt: new Date().toISOString(),
     compiler: {
       version: "0.8.19",
@@ -162,4 +152,4 @@ main()
     console.error("\n❌ Deployment failed:");
     console.error(error);
     process.exit(1);
-  }); 
+  });

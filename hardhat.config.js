@@ -1,5 +1,4 @@
 require("@nomicfoundation/hardhat-ethers");
-require("@nomicfoundation/hardhat-verify");
 require('dotenv').config();
 
 /** @type import('hardhat/config').HardhatUserConfig */
@@ -18,13 +17,10 @@ module.exports = {
       allowUnlimitedContractSize: true
     },
     sepolia: {
-      url: `https://sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      url: process.env.INFURA_API_KEY ? 
+        `https://sepolia.infura.io/v3/${process.env.INFURA_API_KEY}` : 
+        "https://sepolia.infura.io/v3/dummy",
       accounts: process.env.SEPOLIA_PRIVATE_KEY ? [process.env.SEPOLIA_PRIVATE_KEY] : []
-    }
-  },
-  etherscan: {
-    apiKey: {
-      sepolia: process.env.ETHERSCAN_API_KEY
     }
   },
   gasReporter: {
